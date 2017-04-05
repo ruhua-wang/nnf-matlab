@@ -15,14 +15,16 @@ classdef (Abstract) DAERegModel < handle
         te_indices;       % (v) Validation indices
         
         nndbs;            % Cell array of `NNdb` used for layer-wise pretraining
+        split_val_data;   % Split the dataset into a validation dataset
+        fine_tune;        % Whether to fine-tune or not
         %dict_nndb_ref;
     end
     
-    methods (Access = public) 
+    methods (Access = public)
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         % Public Interface       
        	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-        function self = DAERegModel(name, nndbs)
+        function self = DAERegModel(name, nndbs, split_val_data, fine_tune)
             % Constructs a DAERegModel object.
             %
             % Parameters
@@ -33,10 +35,24 @@ classdef (Abstract) DAERegModel < handle
             % nndbs : cell -NNdb
             %     Cell array of `NNdb` used for layer-wise pretraining.
             %
-            disp(['Costructor::DAERegModel ' name]);            
+            % split_val_data : bool
+            %     Split the dataset into a validation dataset.
+            %
+            disp(['Costructor::DAERegModel ' name]);
+            
+            if (nargin < 3)
+                split_val_data = false;
+            end
+            if (nargin < 4)
+                fine_tune = true;
+            end
+            
             self.name = name;
             self.nndbs = nndbs;
-                                    
+            self.split_val_data = split_val_data;
+            self.fine_tune = fine_tune;
+            
+            
             % For all follow up random operations, initialize the same seed
             rng('default');
             
@@ -81,69 +97,123 @@ classdef (Abstract) DAERegModel < handle
             % Fitting nets
             nncfg.nets = [];
             for i=1:numel(rl_arch)
-                rlnet = AECfg(rl_arch(i));             
+                rlnet = AECfg(rl_arch(i));
                 nncfg.nets = [nncfg.nets rlnet];            
             end
                         
             % Fine Tuning
             % Complete network
             nncfg.reg_ratio = 0.0001;
-            nncfg.cost_fn   = 'mse';           
+            nncfg.cost_fn   = 'mse';            
+            nncfg.trainFcn            = 'trainscg';
+            nncfg.trainParam.goal     = 1e-10;
+            nncfg.trainParam.sigma    = 1e-11;
+            nncfg.trainParam.lambda   = 1e-9;
+            nncfg.trainParam.epochs   = 125000;
+            nncfg.trainParam.max_fail = 4100;
+            nncfg.trainParam.min_grad = 1e-10; 
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         function nncfg = get_dae_info(self, dr_arch, rl_arch)
-            % TODO: Complete it
-            % arch = [70 56 49]
+            % Get deep autoencoder neural network configuration.
             %
-            % % Pre-Training related
-            % nncfg.aes = array of AECfg objects
-            % nncfg.net.hidden_nodes 
-            % nncfg.net.act_fn
-            % nncfg.net.cost_fn
-            % nncfg.net.reg_ratio
+            % Parameters
+            % ----------
+            % dr_arch : vector -double
+            %   Dimension reduction net architecture.
             %
-            % % Fine-tune related
-            % nncfg.reg_ratio
+            % rl_arch : vector -double
+            %   Regression net architecture.
+            %
+            % Returns
+            % -------
+            % nncfg : struct
+            %   nncfg.aes = array of AECfg objects (dimension reduction nets)
+            %   nncfg.nets = array of AECfg objects (regression nets)
+            %
+            %   % Fine-tune related for complete network
+            %   nncfg.cost_fn
+            %   nncfg.reg_ratio
             %
             
-            % TODO: CHANGE !!
+            % Imports
+            import nnf.alg.daereg.AECfg;
             
             % Pre-Training
             % Layers before last layer (pre-trained with AEs)
             nncfg.aes = [];
             for i=1:numel(dr_arch)
                 aecfg = AECfg(dr_arch(i));
-                aecfg.enc_fn = 'tansig'; 
+                aecfg.enc_fn = 'logsig'; 
                 aecfg.cost_fn = 'mse';                
                 aecfg.sparse_reg = 0;
+                aecfg.sparsity = 0;
                 aecfg.l2_wd = 0;
-                aecfg.reg_ratio = 0;
+                aecfg.reg_ratio = 0;                
                 nncfg.aes = [nncfg.aes aecfg];
             end
             
             % Fitting nets
             nncfg.nets = [];
-            for i=1:numel(rl_arch) 
+            for i=1:numel(rl_arch)
                 % Fitting net
-                rlnet = AECfg(rl_arch(i));
+                rlnet = AECfg(rl_arch(i)); 
                 rlnet.enc_fn = 'tansig'; 
                 rlnet.cost_fn = 'mse';
-                rlnet.reg_ratio = 0;
-                
+                aecfg.sparse_reg = 0;
+                aecfg.sparsity = 0;
+                aecfg.l2_wd = 0;
+                rlnet.reg_ratio = 0;                
                 nncfg.nets = [nncfg.nets rlnet];            
             end
             
-            % TODO: Delete (For DAEScript)
-            nncfg.net.hidden_nodes = rl_arch(1);
-            nncfg.net.cost_fn = 'mse';
-            nncfg.net.reg_ratio = 0.0001;
+            % Fine Tuning
+            % Complete network
+            nncfg.reg_ratio = 0.0001;
+            nncfg.reg_ratio = 0;
+            nncfg.cost_fn   = 'mse';
+            nncfg.trainFcn            = 'trainscg';
+            nncfg.trainParam.goal     = 1e-10;
+            nncfg.trainParam.sigma    = 1e-6;
+            nncfg.trainParam.lambda   = 1e-5;
+            nncfg.trainParam.epochs   = 125000;
+            nncfg.trainParam.max_fail = 4100;
+            nncfg.trainParam.min_grad = 1e-10;            
+
+        end
+        
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        function nncfg = get_dnn_info(self, arch)
+            % Get deep neural network configuration.
+            %
+            % Parameters
+            % ----------
+            % arch : vector -double
+            %   net architecture.
+            %
+            % Returns
+            % -------
+            % nncfg : struct
+            %   nncfg.dnn = deep neural network configuration
+            %
+
+            % DNN configuration
+            nncfg.dnn.arch = arch;  
             
             % Fine Tuning
             % Complete network
-            nncfg.reg_ratio = 0;           
+            nncfg.reg_ratio = 0;
+            nncfg.cost_fn   = 'mse';
+            nncfg.trainFcn            = 'trainscg';
+            nncfg.trainParam.goal     = 1e-10;
+            nncfg.trainParam.sigma    = 1e-11;
+            nncfg.trainParam.lambda   = 1e-9;
+            nncfg.trainParam.epochs   = 125000;
+            nncfg.trainParam.max_fail = 4100;
+            nncfg.trainParam.min_grad = 1e-10; 
         end
-
+        
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         % Test cases               
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -178,19 +248,6 @@ classdef (Abstract) DAERegModel < handle
 
             pp_infos = self.pre_process(pp_infos);          
             self.train_and_eval(nncfg, pp_infos);
-
-            % TODO: Revisit and Remove
-            % elseif (info.dae) 
-            %     % Compatibility with tansig activation function   
-            %     [PXX, setting] = mapminmax(PXX); %default -1, +1 range
-            %     [PXX_te] = mapminmax('apply',PXX_te,setting); %default -1, +1 range 
-            %     JunLi.DAEScript(PXX, YY, PXX_te, YY_te, info);
-            % 
-            % elseif (info.dnn) 
-            %     [PXX, setting] = mapminmax(PXX); %default -1, +1 range
-            %     [PXX_te] = mapminmax('apply',PXX_te,setting); %default -1, +1 range 
-            %     JunLi.NNScript(PXX, YY, PXX_te, YY_te, info);
-            % end
         end
                        
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -334,16 +391,19 @@ classdef (Abstract) DAERegModel < handle
                         nndb = self.nndbs{i};                        
 
                         tr_db = self.nndbs{i}.features(:, self.tr_indices);
+                        val_db = self.nndbs{i}.features(:, self.val_indices);
                         te_db = self.nndbs{i}.features(:, self.te_indices);
 
                         % Learn whitening project from tr_db
                         [tr_db, W, m] = whiten(tr_db, 1e-5);
 
-                        % Apply it to te_db
-                        te_db         = W'* bsxfun(@minus, te_db, m);
+                        % Apply it to val_db and te_db
+                        val_db = W'* bsxfun(@minus, val_db, m);
+                        te_db  = W'* bsxfun(@minus, te_db, m);
 
                         db = zeros(size(tr_db, 1), nndb.n);
                         db(:, self.tr_indices) = tr_db;
+                        db(:, self.val_indices) = val_db;
                         db(:, self.te_indices) = te_db;
 
                         self.nndbs{i} = NNdb(['db' num2str(i) '_whiten'], db, nndb.n_per_class, false, nndb.cls_lbl, Format.H_N);
@@ -370,8 +430,6 @@ classdef (Abstract) DAERegModel < handle
                         pp_infos{i}.int.whiten.W = W;
                         pp_infos{i}.int.whiten.m = m;
                     end
-
-
                 end
                 
                 % Clear variables
@@ -404,12 +462,15 @@ classdef (Abstract) DAERegModel < handle
                     db = zeros(nndb.h*nndb.w*nndb.ch, nndb.n);
 
                     tr_db = self.nndbs{i}.features(:, self.tr_indices);
+                    val_db = self.nndbs{i}.features(:, self.val_indices);
                     te_db = self.nndbs{i}.features(:, self.te_indices);
 
                     [tr_db, pp_infos{i}.int.setting] = mapminmax(tr_db, min, max);
+                    [val_db] = mapminmax('apply', val_db, pp_infos{i}.int.setting);
                     [te_db] = mapminmax('apply', te_db, pp_infos{i}.int.setting);
 
                     db(:, self.tr_indices) = tr_db;
+                    db(:, self.val_indices) = val_db;
                     db(:, self.te_indices) = te_db;
 
                     db = reshape(db, nndb.h, nndb.w, nndb.ch, nndb.n);
@@ -426,10 +487,15 @@ classdef (Abstract) DAERegModel < handle
             % ----------
             % nndbs : cell -NNdb
             %     Cell array of `NNdb` used for layer-wise pretraining.
-            %
-            
+            %            
             n = nndbs{1}.n;
-            [self.tr_indices, self.val_indices, self.te_indices] = dividerand(n, 85/100, 0, 15/100);% Main division
+            
+            % Main division
+            if (self.split_val_data)
+                [self.tr_indices, self.val_indices, self.te_indices] = dividerand(n, 70/100, 15/100, 15/100);                
+            else
+                [self.tr_indices, self.val_indices, self.te_indices] = dividerand(n, 85/100, 0, 15/100);
+            end
             
             %self.dict_nndb_ref = containers.Map();
             for i=1:numel(nndbs)
@@ -477,33 +543,41 @@ classdef (Abstract) DAERegModel < handle
             %   trainFcn:   trainscg
             %   performFcn: msesparse
             %                        
-            dataset_idx = 1;            
-            XX = self.nndbs{dataset_idx}.features(:, self.tr_indices);
+            dataset_idx = 1;
+            if (self.split_val_data)
+                XX = self.nndbs{dataset_idx}.features;
+            else                
+                XX = self.nndbs{dataset_idx}.features(:, self.tr_indices);
+            end
             XX_te = self.nndbs{dataset_idx}.features(:, self.te_indices);
             dataset_idx = dataset_idx + 1;                
 
-            pretr_nets = cell(1, numel(nncfg.aes)+numel(nncfg.nets));
+            % Configure the network count
+            aes_n = 0;
+            nets_n = 0;
+            if (isfield(nncfg, 'aes'))
+                aes_n = numel(nncfg.aes);
+            end            
+            if (isfield(nncfg, 'nets'))
+                nets_n = numel(nncfg.nets);
+            end
+            
+            pretr_nets = cell(1, aes_n + nets_n);
             net_idx = 1;
-            for i=1:numel(nncfg.aes)
-
+            for i=1:aes_n
                 aecfg = nncfg.aes(i);
                 aecfg.validate();
-                if (aecfg.is_sparse)  
-                    % trainAutoencoder only supports 'msesparse' by default. Thus customized.
-                    autoenc = self.trainAutoencoder(XX, XX, aecfg, aecfg.hidden_nodes,...
-                            'ScaleData', false,...
-                            'useGPU', true);
-                            %'EncoderTransferFunction',aecfg.enc_fn,...
-                            %'DecoderTransferFunction',aecfg.dec_fn,...
-                            %'L2WeightRegularization',aecfg.l2_wd,...
-                            %'SparsityRegularization',aecfg.sparse_reg,...
-                            %'SparsityProportion',aecfg.sparsity,...
+                
+                % trainAutoencoder only supports 'msesparse' by default. Thus customized.
+                autoenc = self.trainAutoencoder(XX, XX, aecfg, aecfg.hidden_nodes, ...
+                        'ScaleData', false,...
+                        'useGPU', true);
+                        %'EncoderTransferFunction',aecfg.enc_fn,...
+                        %'DecoderTransferFunction',aecfg.dec_fn,...
+                        %'L2WeightRegularization',aecfg.l2_wd,...
+                        %'SparsityRegularization',aecfg.sparse_reg,...
+                        %'SparsityProportion',aecfg.sparsity,...
 
-                else
-                    autoenc = self.trainAutoencoder(XX, XX, aecfg, aecfg.hidden_nodes,...
-                            'ScaleData', false,...
-                            'useGPU', true);
-                end
                 pretr_nets{net_idx} = autoenc;
                 net_idx = net_idx + 1;
 
@@ -522,8 +596,12 @@ classdef (Abstract) DAERegModel < handle
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             %% Pre-training layers with Autoencoders (Relationship Mapping)
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%          
-            for i=1:numel(nncfg.nets)
-                XXT = self.nndbs{dataset_idx}.features(:, self.tr_indices);
+            for i=1:nets_n
+                if (self.split_val_data)
+                    XXT = self.nndbs{dataset_idx}.features;
+                else                
+                    XXT = self.nndbs{dataset_idx}.features(:, self.tr_indices);
+                end                
                 XXT_te = self.nndbs{dataset_idx}.features(:, self.te_indices);
 
                 if (dataset_idx + 1 <= numel(self.nndbs))
@@ -536,9 +614,10 @@ classdef (Abstract) DAERegModel < handle
                 % netcfg.outProcessFcns{1} = 'mapminmax';
                 
                 % Train the Network (GPU)
-                autoenc = self.trainAutoencoder(XX, XXT, netcfg, netcfg.hidden_nodes,...
+                autoenc = self.trainAutoencoder(XX, XXT, netcfg, netcfg.hidden_nodes, ...
                             'ScaleData', false,...
                             'useGPU', true);
+                        
                 pretr_nets{net_idx} = autoenc;
                 net_idx = net_idx + 1;
                         
@@ -548,7 +627,7 @@ classdef (Abstract) DAERegModel < handle
                 PXX_te      = predict(autoenc, XX_te);
                 mse_err_te  = mse(XXT_te - PXX_te);
                 disp(['NT' num2str(i) '_ERR: Tr:' num2str(mse_err_tr) ' Te:' num2str(mse_err_te)]);
-                                
+
                 % Encode the information for the next round
                 XX     = encode(autoenc, XX);
                 XX_te  = encode(autoenc, XX_te);
@@ -562,9 +641,9 @@ classdef (Abstract) DAERegModel < handle
             % Stack the layers for a Deep Network and Fine-Tune
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             % If `regression` nets are present
-            if (numel(nncfg.nets) > 0) 
-                deepnet = pretr_nets{1};
-                if (numel(pretr_nets) >= 2)           
+            if (nets_n > 0)
+                if (numel(pretr_nets) >= 2)
+                    deepnet = pretr_nets{1};
                     for i=2:numel(pretr_nets)-1
                         deepnet = stack(deepnet, pretr_nets{i}); 
                     end    
@@ -573,11 +652,109 @@ classdef (Abstract) DAERegModel < handle
                     % used with stack(...). When 'Autoencoder' is used with stack(...), the encoder weights
                     % along with the encoder will be used but not decoding segment.
                     deepnet = stack(deepnet, pretr_nets{end}.network);
+                else
+                    deepnet = pretr_nets{1}.network;
+                end
+               
+            % Deep neural network
+            elseif (isfield(nncfg, 'dnn'))
+                % Building model from the scratch, uncomment if necessary
+                % layer_n = numel(nncfg.dnn.arch) + 1; % hidden layers + output
+                % biasConnect = ones(layer_n, 1);                
+                % inputConnect = zeros(layer_n, 1);
+                % inputConnect(1) = 1;
+                % layerConnect = ones(layer_n - 1, 1);
+                % layerConnect = diag(layerConnect, -1);
+                % outputConnect = zeros(1, layer_n);
+                % outputConnect(end) = 1;
+                % deepnet = network(1, layer_n, ...
+                %                     logical(biasConnect), ...
+                %                     logical(inputConnect), ...
+                %                     logical(layerConnect), ...
+                %                     outputConnect);
+                % 
+                % deepnet.plotFcns = {'plotperform', 'plottrainstate', 'ploterrhist', ...
+                %                     'plotregression', 'plotfit'};
+                % for i=1:layer_n
+                %     if (i <= numel(nncfg.dnn.arch))
+                %         deepnet.layers{i}.dimensions = nncfg.dnn.arch(i);
+                %         deepnet.layers{i}.transferFcn = 'logsig';                        
+                %     else
+                %         deepnet.layers{i}.transferFcn = 'purelin';
+                %     end
+                %     deepnet.layers{i}.initFcn = 'initnw';
+                % end                
+                % 
+                % XX = self.nndbs{1}.features(:, [self.tr_indices self.val_indices]);
+                % YY = self.nndbs{end}.features(:, [self.tr_indices self.val_indices]);
+                % deepnet = configure(deepnet, XX, YY);
+                % 
+                % deepnet.adaptFcn = 'adaptwb';
+                % deepnet.inputWeights{1}.learnFcn = 'learngdm';
+                % deepnet.layerWeights{1}.learnFcn = 'learngdm';
+  
+                
+                % Create a fitnet
+                deepnet = fitnet(nncfg.dnn.arch, nncfg.trainFcn);
+                deepnet.inputs{1}.processFcns = {};
+                deepnet.outputs{end}.processFcns = {};
+                %deepnet.outputs{6}.processFcns(1)=[];
+                
+                deepnet.adaptFcn = '';
+                deepnet.inputWeights{1}.learnFcn = '';                
+                for i=1:numel(deepnet.layers)-1
+                    deepnet.layerWeights{i+1, i}.learnFcn = '';
+                    deepnet.layers{i}.transferFcn = 'logsig';
                 end
                 
             else
-                % If no `regression` nets are present, but `dimension reduction nets` are present
-                % TODO: Basic Deep Autoencoder stacking
+                assert(false); % Not supported as of now.
+                % TODO: Complete the basic DAE with tied weights
+                % % If no `regression` nets are present, but `dimension reduction nets` are present                               
+                % % stack basic deep auto encoder
+                % if (numel(nncfg.dec_aecfg) > 0)
+                % 
+                %     % Stack the encoders
+                %     deepnet = pretr_nets{1};
+                %     if (numel(pretr_nets) >= 2)           
+                %         for i=2:numel(pretr_nets)
+                %             deepnet = stack(deepnet, pretr_nets{i}); 
+                %         end
+                %     end                   
+                % 
+                %     % Train or tie the weights and stack the decoders
+                %     for i=1:numel(nncfg.dec_aecfg)
+                % 
+                %         % Last decoder model for symmetric DAE
+                %         if (numel(nncfg.pretr_nets) == i+1)                            
+                %             % Set the weights for tied weights configuration
+                %             tweights = {zeros(30), zeros(30)};
+                % 
+                %         elseif (numel(nncfg.pretr_nets) <= i)
+                %             warning('Asymmetric deep autoencoder model');   
+                % 
+                %         else                            
+                %             % Set the weights for tied weights configuration
+                %             tweights = {zeros(30), []};
+                %         end
+                % 
+                %         % Decoder net configuration 
+                %         autoenc = self.trainAutoencoder(XX, XX, dec_aecfg, tweights, dec_aecfg.hidden_nodes,...                                
+                %                 'ScaleData', false,...
+                %                 'useGPU', true);
+                % 
+                %         % Last decoder model
+                %         if (numel(nncfg.dec_aecfg) == i)
+                %             deepnet = stack(deepnet, autoenc.network);
+                %         else
+                %             deepnet = stack(deepnet, autoenc);
+                %         end
+                %     end
+                        
+                % else
+                    % TODO: Just stack the encoders
+                % end
+                
             end
                         
             % Validate the deepnet to see the learnt weights and bias are transfered properly
@@ -585,29 +762,48 @@ classdef (Abstract) DAERegModel < handle
 
             % Configure deepnet (rest of the configs are obtained from 'net' network as per matlab
             % documentation
-            deepnet.divideFcn               = 'dividerand'; % Divide data randomly
-            deepnet.divideMode              = 'sample';     % Divide up every sample
-            deepnet.divideParam.trainRatio  = 70/100;
-            deepnet.divideParam.valRatio    = 15/100;
-            deepnet.divideParam.testRatio   = 15/100;
-
-            % trainscg learning parameters
-            deepnet.trainParam.sigma    = 1e-11;
-            deepnet.trainParam.lambda   = 1e-9;
-            deepnet.trainParam.epochs   = 125000;
-            deepnet.trainParam.max_fail = 4100;
+            % Training function and related learning parameters
+            % default: 'trainscg'
+            deepnet.trainFcn = nncfg.trainFcn;
+            fields = fieldnames(nncfg.trainParam);
+            for fn=fields'
+              % since fn is a 1-by-1 cell array, you still need to index into it, unfortunately
+              deepnet.trainParam.(fn{1}) = nncfg.trainParam.(fn{1});
+            end           
 
             % Set performance param
             deepnet.performFcn = nncfg.cost_fn;
             
             % Set reguralization ratio
             deepnet.performParam.regularization = nncfg.reg_ratio;
-
+            
+            % Setup Division of Data for Training, Validation, Testing
+            if (self.split_val_data)
+                deepnet.divideFcn = 'divideind';
+                deepnet.divideMode = 'sample';  % Divide up every sample
+                deepnet.divideParam.trainInd = self.tr_indices;
+                deepnet.divideParam.valInd = self.val_indices;
+                deepnet.divideParam.testInd = self.te_indices;    
+                
+                XX = self.nndbs{1}.features;
+                YY = self.nndbs{end}.features;
+            else                
+                deepnet.divideFcn               = 'dividerand'; % Divide data randomly
+                deepnet.divideMode              = 'sample';     % Divide up every sample
+                deepnet.divideParam.trainRatio  = 70/100;
+                deepnet.divideParam.valRatio    = 15/100;
+                deepnet.divideParam.testRatio   = 15/100;
+                
+                XX = self.nndbs{1}.features(:, [self.tr_indices self.val_indices]);
+                YY = self.nndbs{end}.features(:, [self.tr_indices self.val_indices]);
+            end
+            
             % Fine-tune the deep network
-            XX = self.nndbs{1}.features(:, self.tr_indices);
-            YY = self.nndbs{end}.features(:, self.tr_indices);
-            [deepnet, tr_stat] = train(deepnet, XX, YY, 'useGPU', 'yes'); %, 'showResources', 'yes'); 
-
+            tr_stat = [];
+            if (self.fine_tune)
+                [deepnet, tr_stat] = train(deepnet, XX, YY, 'useGPU', 'yes'); %, 'showResources', 'yes'); 
+            end            
+            
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             % Test the Network
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -635,6 +831,10 @@ classdef (Abstract) DAERegModel < handle
             % VALIDATE: Assertion checks to see whether the pre-trained weights were properly
             % transfered.
             %
+            
+            if (isempty(pretr_nets))
+                return
+            end
                         
             % Bias check                
             for i=1:numel(pretr_nets)
@@ -813,17 +1013,20 @@ classdef (Abstract) DAERegModel < handle
             % 'trainlm';  % Levenberg-Marquardt backpropagation.
             
             % Setup Division of Data for Training, Validation, Testing
-            autonet.divideFcn = 'dividerand';  % Divide data randomly
-            autonet.divideMode = 'sample';  % Divide up every sample
-            autonet.divideParam.trainRatio  = 85/100;
-            autonet.divideParam.valRatio    = 15/100;
-            autonet.divideParam.testRatio   = 0;
-
-            % if(paramsStruct.ScaleData)
-            %     autonet.inputs{1}.processParams{1}.ymin = 0;
-            %     autonet.outputs{2}.processParams{1}.ymin = 0;
-            % end            
-                    
+            if (self.split_val_data)
+                autonet.divideFcn = 'divideind';
+                autonet.divideMode = 'sample';  % Divide up every sample
+                autonet.divideParam.trainInd = self.tr_indices;
+                autonet.divideParam.valInd = self.val_indices;
+                autonet.divideParam.testInd = self.te_indices;              
+            else                
+                autonet.divideFcn = 'dividerand';  % Divide data randomly
+                autonet.divideMode = 'sample';  % Divide up every sample
+                autonet.divideParam.trainRatio  = 85/100;
+                autonet.divideParam.valRatio    = 15/100;
+                autonet.divideParam.testRatio   = 0;
+            end
+            
             %if (~strcmp(aecfg.cost_fn, 'msesparse'))
                 % trainAutoencoder only supports 'msesparse' by default. Thus customized.
                 autonet.performFcn = aecfg.cost_fn; % will also reset performParams
@@ -901,9 +1104,6 @@ classdef (Abstract) DAERegModel < handle
                 autonet.b{1,1} = b1;
                 % autonet.LW{2,1} = LW;
                 % autonet.b{2,1} = b2;
-            else
-                % https://au.mathworks.com/help/nnet/ref/initnw.html
-                autonet.layers{1}.initFcn = 'initnw';
             end
              
             % Train AE
@@ -911,8 +1111,9 @@ classdef (Abstract) DAERegModel < handle
                 %autonet = self.batch_train(autonet, X, Y, 125000, 5000)
                 [autonet, tr] = train(autonet,X, Y, 'useGPU','yes');
                 autoenc = Autoencoder(autonet, true, 1,0);
-
+                
             else
+                % assert(false); % This path is deprecated with the introduction of tied weights
                 % Train Autoencoder to reduce the dimensionality
                 autoenc = Autoencoder.train(X, autonet, paramsStruct.UseGPU);
             end 
